@@ -14,11 +14,16 @@ if [[ "$(id -u)" != "0" ]]; then
     exit 1
 fi
 
-# 2. Check OS distribution (Ubuntu only)
+# 2. Check OS distribution (Ubuntu / Debian)
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-    if [[ "${ID:-}" != "ubuntu" ]]; then
-        echo -e "${RED}错误: 本系统不是 Ubuntu！目前 AimiliVPN 仅支持 Ubuntu 系统。${PLAIN}"
+    SUPPORTED_OS=false
+    if [[ "${ID:-}" == "ubuntu" || "${ID:-}" == "debian" ]]; then
+        SUPPORTED_OS=true
+    fi
+
+    if [[ "$SUPPORTED_OS" != "true" ]]; then
+        echo -e "${RED}错误: 当前系统不是受支持的 Ubuntu / Debian！目前 AimiliVPN 仅支持 Ubuntu / Debian 系统。${PLAIN}"
         exit 1
     fi
 else
@@ -26,13 +31,24 @@ else
     exit 1
 fi
 
+# 3. Check systemd availability
+if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --version >/dev/null 2>&1; then
+    echo -e "${RED}错误: 当前系统没有可用的 systemd/systemctl，无法自动安装 AimiliVPN 服务。${PLAIN}"
+    exit 1
+fi
+
+if [ -r /proc/1/comm ] && [[ "$(cat /proc/1/comm 2>/dev/null)" != "systemd" ]]; then
+    echo -e "${RED}错误: 当前 PID 1 不是 systemd，无法可靠管理 AimiliVPN 服务。请改用标准 Ubuntu / Debian VPS 环境。${PLAIN}"
+    exit 1
+fi
+
 echo -e "${BLUE}==========================================================${PLAIN}"
 echo -e "${BLUE}        欢迎使用 AimiliVPN 一键源码部署与管理脚本${PLAIN}"
 echo -e "${BLUE}==========================================================${PLAIN}"
 
-# 3. Configure GitHub Repository URL
-# Default to the official repository (baoweise-bot/aimili-vpngate)
-DEFAULT_USER="baoweise-bot"
+# 4. Configure GitHub Repository URL
+# Default to the official repository (pjy02/aimili-vpngate)
+DEFAULT_USER="pjy02"
 DEFAULT_REPO="aimili-vpngate"
 
 # Allow custom repository override via command line arguments
@@ -44,10 +60,21 @@ GITHUB_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
 echo -e "\n${YELLOW}[1/4] 正在安装系统基础依赖...${PLAIN}"
 echo -e "  -> 正在运行 apt-get update 更新软件源清单..."
 apt-get update -q || true
-echo -e "  -> 正在运行 apt-get install 安装基础依赖包 (openvpn, curl, git, iptables, iproute2, psmisc, python3)..."
-apt-get install -y openvpn curl git ca-certificates iptables iproute2 psmisc python3
+echo -e "  -> 正在运行 apt-get install 安装基础依赖包 (openvpn, curl, git, iptables, iproute2, iputils-ping, psmisc, procps, python3)..."
+apt-get install -y openvpn curl git ca-certificates iptables iproute2 iputils-ping psmisc procps python3
 
-# 4. Clone or pull the repository
+echo -e "  -> 正在检查 Python 版本 (需要 Python 3.10+) ..."
+if ! python3 - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+then
+    PY_VER=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo "unknown")
+    echo -e "${RED}错误: AimiliVPN 需要 Python 3.10+，当前 python3 版本为 ${PY_VER}。建议使用 Ubuntu 22.04+ 或 Debian 12+。${PLAIN}"
+    exit 1
+fi
+
+# 5. Clone or pull the repository
 INSTALL_DIR="/opt/aimilivpn"
 echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR}...${PLAIN}"
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then
@@ -84,7 +111,7 @@ else
     fi
 fi
 
-# 5. Configure Systemd Service (direct python3 run)
+# 6. Configure Systemd Service (direct python3 run)
 echo -e "\n${YELLOW}[3/4] 正在配置 systemd 系统服务...${PLAIN}"
 echo -e "  -> 正在创建服务配置 /lib/systemd/system/aimilivpn.service ..."
 cat > /lib/systemd/system/aimilivpn.service <<EOF
@@ -108,7 +135,7 @@ echo -e "  -> 正在重新加载 systemd 系统服务列表并启用开机自启
 systemctl daemon-reload
 systemctl enable aimilivpn.service
 
-# 6. Configure global command shortcut "ml"
+# 7. Configure global command shortcut "ml"
 echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'ml'...${PLAIN}"
 echo -e "  -> 正在写入管理脚本 /usr/bin/ml ..."
 cat > /usr/bin/ml <<'EOF'
